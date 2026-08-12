@@ -18,7 +18,7 @@ const STATUS = {
 let sdkPromise;
 async function loadSdk() {
     if (!sdkPromise) {
-        const runtimeUrl = new URL("./vendor/meshtastic-runtime.js", window.location.href).href;
+        const runtimeUrl = new URL("./vendor-v0.6.8/meshtastic-runtime.js", window.location.href).href;
         sdkPromise = import(/* @vite-ignore */ runtimeUrl).then(module => {
             const runtime = module;
             if (typeof runtime.MeshDevice !== "function") {

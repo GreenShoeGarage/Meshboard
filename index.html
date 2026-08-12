@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark light" />
   <meta name="theme-color" content="#101418" />
-  <meta name="meshboard-version" content="0.6.7" />
-  <link rel="manifest" href="./manifest.webmanifest" />
-  <link rel="stylesheet" href="./styles.css" />
+  <meta name="meshboard-version" content="0.6.8" />
+  <link rel="manifest" href="./manifest.webmanifest?v=0.6.8" />
+  <link rel="stylesheet" href="./styles-v0.6.8.css?v=0.6.8" />
   <title>MESHBOARD — Meshtastic Network Field Instrument</title>
 </head>
 <body>
@@ -18,23 +18,52 @@
   </div>
   <div id="app"></div>
   <script type="module">
+    const VERSION = "0.6.8";
     const message = document.querySelector("#startup-message");
     const fallback = document.querySelector("#startup-fallback");
+    const base = new URL("./", location.href).href;
+
+    async function retireLegacyRuntime() {
+      if ("serviceWorker" in navigator) {
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const reg of regs) {
+            if (reg.scope === base || reg.scope.startsWith(base)) await reg.unregister();
+          }
+        } catch {}
+      }
+      if ("caches" in window) {
+        try {
+          for (const key of await caches.keys()) {
+            if (key.startsWith("meshboard-v")) await caches.delete(key);
+          }
+        } catch {}
+      }
+    }
+
     const watchdog = window.setTimeout(() => {
       if (!document.querySelector(".app-shell") && fallback) {
         message.textContent = "Startup is taking too long. The application module did not finish loading.";
         const detail = document.createElement("p");
-        detail.textContent = "Reload once. If this remains, check the browser console/network panel for app/main.js. Project data has not been cleared.";
+        detail.textContent = `MESHBOARD v${VERSION} uses versioned application URLs so legacy cached JavaScript cannot be reused.`;
         fallback.append(detail);
       }
-    }, 6000);
-    import("./app/main.js").then(() => window.clearTimeout(watchdog)).catch((error) => {
+    }, 8000);
+
+    try {
+      message.textContent = "Retiring older MESHBOARD runtime caches…";
+      await retireLegacyRuntime();
+      message.textContent = "Loading MESHBOARD v0.6.8…";
+      await import("./app-v0.6.8/main.js?v=0.6.8");
       window.clearTimeout(watchdog);
-      if (!fallback) return;
-      const text = error instanceof Error ? (error.stack || error.message) : String(error);
-      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.7</b>`;
-      fallback.querySelector("pre").textContent = text;
-    });
+    } catch (error) {
+      window.clearTimeout(watchdog);
+      if (fallback) {
+        const text = error instanceof Error ? (error.stack || error.message) : String(error);
+        fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The v${VERSION} application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v${VERSION}</b>`;
+        fallback.querySelector("pre").textContent = text;
+      }
+    }
   </script>
 </body>
 </html>
