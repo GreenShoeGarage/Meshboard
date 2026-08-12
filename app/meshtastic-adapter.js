@@ -1,4 +1,4 @@
-import { bytesToHex, nodeId, safeObject } from "./utils";
+import { bytesToHex, nodeId, safeObject } from "./utils.js";
 const BAUD_RATE = 115200;
 const SYNC_TIMEOUT_MS = 60_000;
 const RESYNC_TIMEOUT_MS = 60_000;
@@ -21,13 +21,10 @@ async function loadSdk() {
         const runtimeUrl = new URL("./vendor/meshtastic-runtime.js", window.location.href).href;
         sdkPromise = import(/* @vite-ignore */ runtimeUrl).then(module => {
             const runtime = module;
-            if (typeof runtime.MeshDevice !== "function" || typeof runtime.TransportWebSerial !== "function") {
-                throw new Error("The bundled Meshtastic runtime does not expose the required browser client and Web Serial transport.");
+            if (typeof runtime.MeshDevice !== "function") {
+                throw new Error("The bundled Meshtastic runtime does not expose the required browser client.");
             }
-            return {
-                core: { MeshDevice: runtime.MeshDevice, Protobuf: {}, Constants: {} },
-                serial: { TransportWebSerial: runtime.TransportWebSerial }
-            };
+            return { core: { MeshDevice: runtime.MeshDevice, Protobuf: {}, Constants: {} } };
         }).catch(error => {
             sdkPromise = undefined;
             throw new Error(`Bundled Meshtastic browser runtime could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
@@ -96,16 +93,29 @@ function serialFailure(kind, userMessage, cause) {
     return failure;
 }
 async function prepareSerialPort(port, onAttempt) {
-    // Port hygiene mirrors the current official Meshtastic Web Serial transport.
-    // A stale stream can remain briefly after reconnect/re-enumeration; release it first.
+    // If this tab owns a stale open descriptor, give its previous reader/writer
+    // cleanup a bounded opportunity to settle before classifying the port as busy.
     if (port.readable || port.writable) {
-        try {
-            await port.close();
+        let closeError;
+        const settleDelays = [0, 100, 250, 500, 1_000];
+        for (const delay of settleDelays) {
+            if (delay)
+                await sleep(delay);
+            if (!port.readable && !port.writable)
+                break;
+            try {
+                await port.close();
+                closeError = undefined;
+                await sleep(POST_CLOSE_DELAY_MS);
+                break;
+            }
+            catch (cause) {
+                closeError = cause;
+            }
         }
-        catch (cause) {
-            throw serialFailure("in-use", "Serial port is open and could not be released. Close any other Meshtastic tab, flasher, Arduino Serial Monitor, terminal, esptool, or Meshtastic CLI using this radio, then try again.", cause);
+        if (port.readable || port.writable) {
+            throw serialFailure("in-use", "The serial descriptor is still open and locked. MESHBOARD could not release the prior stream cleanly. Close any other tab/app using the radio; if none are open, unplug/replug the radio once and reconnect.", closeError);
         }
-        await sleep(POST_CLOSE_DELAY_MS);
     }
     let lastError;
     const total = PORT_OPEN_RETRY_DELAYS_MS.length + 1;
@@ -146,6 +156,225 @@ function encryptedPayload(packet) {
     if (packet?.payloadVariant?.case === "encrypted" && packet.payloadVariant.value instanceof Uint8Array)
         return packet.payloadVariant.value;
     return undefined;
+}
+function frameToDevice(payload) {
+    const length = payload.length;
+    const framed = new Uint8Array(length + 4);
+    framed[0] = 0x94;
+    framed[1] = 0xc3;
+    framed[2] = (length >> 8) & 0xff;
+    framed[3] = length & 0xff;
+    framed.set(payload, 4);
+    return framed;
+}
+/**
+ * MESHBOARD-owned Web Serial transport. It intentionally owns the underlying
+ * SerialPort reader/writer rather than piping the port through another locked
+ * stream. This lets disconnect() cancel the exact reader, await its read loop,
+ * release both port locks, and only then call SerialPort.close().
+ */
+export class MeshboardSerialTransport {
+    toDevice;
+    fromDevice;
+    port;
+    reader;
+    writer;
+    controller;
+    readLoopPromise;
+    closing = false;
+    portClosed = false;
+    disconnecting;
+    lastStatus = STATUS.DeviceDisconnected;
+    byteBuffer = new Uint8Array(0);
+    textDecoder = new TextDecoder();
+    constructor(port) {
+        if (!port.readable || !port.writable)
+            throw new Error("Serial port streams are not accessible.");
+        this.port = port;
+        const reader = port.readable.getReader();
+        let writer;
+        try {
+            writer = port.writable.getWriter();
+        }
+        catch (error) {
+            try {
+                reader.releaseLock();
+            }
+            catch { }
+            throw error;
+        }
+        this.reader = reader;
+        this.writer = writer;
+        this.toDevice = new WritableStream({
+            write: async (payload) => {
+                if (this.closing)
+                    throw new Error("Serial transport is closing.");
+                await this.writer.write(frameToDevice(payload));
+            },
+            close: async () => { },
+            abort: async () => { }
+        });
+        this.fromDevice = new ReadableStream({
+            start: (controller) => {
+                this.controller = controller;
+                this.emitStatus(STATUS.DeviceConnecting);
+            },
+            cancel: async () => {
+                if (!this.closing)
+                    await this.cancelReader();
+            }
+        });
+        this.emitStatus(STATUS.DeviceConnected);
+        this.readLoopPromise = this.readLoop();
+    }
+    emitStatus(status, reason) {
+        if (!this.controller || status === this.lastStatus)
+            return;
+        this.lastStatus = status;
+        try {
+            this.controller.enqueue({ type: "status", data: { status, reason } });
+        }
+        catch { /* stream already closing */ }
+    }
+    append(chunk) {
+        const joined = new Uint8Array(this.byteBuffer.length + chunk.length);
+        joined.set(this.byteBuffer);
+        joined.set(chunk, this.byteBuffer.length);
+        this.byteBuffer = joined;
+    }
+    drainFrames() {
+        while (this.byteBuffer.length) {
+            const framingIndex = this.byteBuffer.indexOf(0x94);
+            if (framingIndex < 0) {
+                // Preserve a trailing 0x94 because the second framing byte may arrive
+                // in the next USB chunk; everything before it is device debug text.
+                const preserve = this.byteBuffer[this.byteBuffer.length - 1] === 0x94 ? 1 : 0;
+                const debug = this.byteBuffer.subarray(0, this.byteBuffer.length - preserve);
+                const text = this.textDecoder.decode(debug);
+                if (text)
+                    this.controller?.enqueue({ type: "debug", data: text });
+                this.byteBuffer = preserve ? this.byteBuffer.slice(-1) : new Uint8Array(0);
+                return;
+            }
+            if (framingIndex > 0) {
+                const debug = this.byteBuffer.subarray(0, framingIndex);
+                const text = this.textDecoder.decode(debug);
+                if (text)
+                    this.controller?.enqueue({ type: "debug", data: text });
+                this.byteBuffer = this.byteBuffer.subarray(framingIndex);
+            }
+            if (this.byteBuffer.length < 2)
+                return;
+            if (this.byteBuffer[1] !== 0xc3) {
+                // Not a valid start marker; consume one byte and continue scanning.
+                this.byteBuffer = this.byteBuffer.subarray(1);
+                continue;
+            }
+            if (this.byteBuffer.length < 4)
+                return;
+            const length = ((this.byteBuffer[2] ?? 0) << 8) | (this.byteBuffer[3] ?? 0);
+            if (this.byteBuffer.length < 4 + length)
+                return;
+            const packet = this.byteBuffer.slice(4, 4 + length);
+            this.byteBuffer = this.byteBuffer.subarray(4 + length);
+            this.controller?.enqueue({ type: "packet", data: packet });
+        }
+    }
+    async readLoop() {
+        let failed = false;
+        try {
+            while (!this.closing) {
+                const { value, done } = await this.reader.read();
+                if (done)
+                    break;
+                if (value?.length) {
+                    this.append(value);
+                    this.drainFrames();
+                }
+            }
+        }
+        catch (error) {
+            failed = !this.closing;
+            if (failed) {
+                this.emitStatus(STATUS.DeviceDisconnected, "read-error");
+                try {
+                    this.controller?.error(error instanceof Error ? error : new Error(String(error)));
+                }
+                catch { }
+            }
+        }
+        finally {
+            try {
+                this.reader.releaseLock();
+            }
+            catch { }
+            if (!failed) {
+                try {
+                    this.controller?.close();
+                }
+                catch { }
+            }
+        }
+    }
+    async cancelReader() {
+        try {
+            await this.reader.cancel();
+        }
+        catch { }
+    }
+    async disconnect() {
+        if (this.portClosed)
+            return;
+        if (this.disconnecting)
+            return this.disconnecting;
+        const operation = this.closePortLifecycle();
+        this.disconnecting = operation;
+        try {
+            await operation;
+        }
+        finally {
+            if (this.disconnecting === operation)
+                this.disconnecting = undefined;
+        }
+    }
+    async closePortLifecycle() {
+        this.closing = true;
+        // Cancel the exact underlying reader first. Per Web Serial, this resolves a
+        // pending read so readLoop() can release the SerialPort.readable lock.
+        await this.cancelReader();
+        await this.readLoopPromise.catch(() => { });
+        // No more writes are accepted. Flush what the serial writer has already
+        // accepted, then release the SerialPort.writable lock.
+        try {
+            await this.writer.ready;
+        }
+        catch { }
+        try {
+            this.writer.releaseLock();
+        }
+        catch { }
+        let lastError;
+        const closeDelays = [0, 50, 150, 300];
+        for (const delay of closeDelays) {
+            if (delay)
+                await sleep(delay);
+            if (!this.port.readable && !this.port.writable) {
+                this.portClosed = true;
+                return;
+            }
+            if (this.port.readable?.locked || this.port.writable?.locked)
+                continue;
+            try {
+                await this.port.close();
+                this.portClosed = true;
+                return;
+            }
+            catch (error) {
+                lastError = error;
+            }
+        }
+        throw new Error(`MESHBOARD released its serial reader/writer but the browser still could not close the port${lastError instanceof Error && lastError.message ? `: ${lastError.message}` : "."}`);
+    }
 }
 export class MeshtasticAdapter {
     device;
@@ -229,7 +458,7 @@ export class MeshtasticAdapter {
         try {
             if (!("serial" in navigator))
                 throw new Error("Web Serial API is not available in this browser.");
-            const { core, serial } = await loadSdk();
+            const { core } = await loadSdk();
             this.core = core;
             this.hooks.sdkState(recoveryAttempt ? `Reconnect attempt ${this.reconnectAttempt}` : "Selecting serial device");
             const port = reuseGrantedPort ? await this.findGrantedPort() : await navigator.serial.requestPort();
@@ -249,7 +478,7 @@ export class MeshtasticAdapter {
             });
             this.hooks.sdkState("USB serial port open; creating Meshtastic transport");
             // The descriptor is already open. Construct the vendored browser transport directly.
-            const transport = new serial.TransportWebSerial(port);
+            const transport = new MeshboardSerialTransport(port);
             if (generation !== this.generation) {
                 await transport.disconnect().catch(() => { });
                 return;

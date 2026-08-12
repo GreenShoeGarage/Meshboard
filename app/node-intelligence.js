@@ -1,4 +1,4 @@
-import { median } from "./utils";
+import { median } from "./utils.js";
 export const NODE_COLUMNS = [
     { id: "status", label: "STATUS", defaultWidth: 92 },
     { id: "node", label: "NODE", defaultWidth: 180 },

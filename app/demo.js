@@ -1,5 +1,5 @@
-import { emptyProject } from "./models";
-import { nodeId } from "./utils";
+import { emptyProject } from "./models.js";
+import { nodeId } from "./utils.js";
 function ago(minutes) { return new Date(Date.now() - minutes * 60_000).toISOString(); }
 function n(num, longName, shortName, lat, lon, opts = {}) {
     return {

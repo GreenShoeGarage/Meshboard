@@ -1,4 +1,4 @@
-import { defaultSettings, normalizeProject } from "./models";
+import { defaultSettings, normalizeProject } from "./models.js";
 const DB_NAME = "meshboard";
 const DB_VERSION = 1;
 const PROJECTS = "projects";

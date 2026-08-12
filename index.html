@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark light" />
   <meta name="theme-color" content="#101418" />
-  <meta name="meshboard-version" content="0.6.6" />
+  <meta name="meshboard-version" content="0.6.7" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
   <title>MESHBOARD — Meshtastic Network Field Instrument</title>
@@ -32,7 +32,7 @@
       window.clearTimeout(watchdog);
       if (!fallback) return;
       const text = error instanceof Error ? (error.stack || error.message) : String(error);
-      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.6</b>`;
+      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.7</b>`;
       fallback.querySelector("pre").textContent = text;
     });
   </script>

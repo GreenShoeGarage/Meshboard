@@ -1,4 +1,4 @@
-export const APP_VERSION = "0.6.6";
+export const APP_VERSION = "0.6.7";
 export const SCHEMA_VERSION = 5;
 export function emptyProject(name = "Untitled Mesh Project") {
     const now = new Date().toISOString();
