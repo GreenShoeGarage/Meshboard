@@ -1,4 +1,4 @@
-const CACHE = "meshboard-v0.6.3";
+const CACHE = "meshboard-v0.6.4";
 const CORE = [
   "./styles.css", "./manifest.webmanifest",
   "./app/main.js", "./app/models.js", "./app/demo.js", "./app/storage.js",
