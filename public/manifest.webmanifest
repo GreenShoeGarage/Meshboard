@@ -1,0 +1,9 @@
+{
+  "name": "MESHBOARD — Meshtastic Network Field Instrument",
+  "short_name": "MESHBOARD",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#101418",
+  "theme_color": "#101418",
+  "description": "Local-first Meshtastic Web Serial operator and engineering console."
+}

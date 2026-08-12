@@ -1,0 +1,8 @@
+MESHBOARD v0.6.0
+Copyright (c) 2026
+
+This project is intended for distribution under GPL-3.0-only.
+It depends on Meshtastic packages that are themselves GPL-3.0-only.
+
+Meshtastic is a separate project and Meshtastic® is a trademark of Meshtastic LLC.
+No affiliation or endorsement is implied.

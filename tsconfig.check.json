@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@meshtastic/sdk": ["src/sdk-stubs.d.ts"],
+      "@meshtastic/transport-web-serial": ["src/sdk-stubs.d.ts"]
+    }
+  }
+}
