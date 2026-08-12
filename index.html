@@ -5,16 +5,44 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark light" />
   <meta name="theme-color" content="#101418" />
+  <meta name="meshboard-version" content="0.6.1" />
   <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
   <title>MESHBOARD — Meshtastic Network Field Instrument</title>
+  <script type="importmap">
+  {
+    "imports": {
+      "@meshtastic/core": "https://esm.sh/@meshtastic/core@2.6.7?bundle",
+      "@meshtastic/transport-web-serial": "https://esm.sh/@meshtastic/transport-web-serial@0.2.5?bundle"
+    }
+  }
+  </script>
 </head>
 <body>
   <div id="startup-fallback" class="startup-fallback">
     <h1>MESHBOARD</h1>
-    <p>Starting Meshtastic Network Field Instrument…</p>
+    <p id="startup-message">Starting Meshtastic Network Field Instrument…</p>
     <noscript>This application requires JavaScript.</noscript>
   </div>
   <div id="app"></div>
-  <script type="module" src="/src/main.ts"></script>
+  <script type="module">
+    const message = document.querySelector("#startup-message");
+    const fallback = document.querySelector("#startup-fallback");
+    const watchdog = window.setTimeout(() => {
+      if (!document.querySelector(".app-shell") && fallback) {
+        message.textContent = "Startup is taking too long. The application module did not finish loading.";
+        const detail = document.createElement("p");
+        detail.textContent = "Reload once. If this remains, check the browser console/network panel for app/main.js. Project data has not been cleared.";
+        fallback.append(detail);
+      }
+    }, 6000);
+    import("./app/main.js").then(() => window.clearTimeout(watchdog)).catch((error) => {
+      window.clearTimeout(watchdog);
+      if (!fallback) return;
+      const text = error instanceof Error ? (error.stack || error.message) : String(error);
+      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.1</b>`;
+      fallback.querySelector("pre").textContent = text;
+    });
+  </script>
 </body>
 </html>
