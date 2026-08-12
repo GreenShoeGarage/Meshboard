@@ -5,18 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="dark light" />
   <meta name="theme-color" content="#101418" />
-  <meta name="meshboard-version" content="0.6.4" />
+  <meta name="meshboard-version" content="0.6.5" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
   <title>MESHBOARD — Meshtastic Network Field Instrument</title>
-  <script type="importmap">
-  {
-    "imports": {
-      "@meshtastic/core": "https://cdn.jsdelivr.net/npm/@meshtastic/core@2.6.7/dist/mod.js",
-      "@meshtastic/transport-web-serial": "https://cdn.jsdelivr.net/npm/@meshtastic/transport-web-serial@0.2.5/dist/mod.js"
-    }
-  }
-  </script>
 </head>
 <body>
   <div id="startup-fallback" class="startup-fallback">
@@ -40,7 +32,7 @@
       window.clearTimeout(watchdog);
       if (!fallback) return;
       const text = error instanceof Error ? (error.stack || error.message) : String(error);
-      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.4</b>`;
+      fallback.innerHTML = `<h1>MESHBOARD startup error</h1><p>The browser application module could not be loaded.</p><p>Project data in browser storage has not been intentionally cleared.</p><pre></pre><b>MESHBOARD v0.6.5</b>`;
       fallback.querySelector("pre").textContent = text;
     });
   </script>

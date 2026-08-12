@@ -1,9 +1,10 @@
-const CACHE = "meshboard-v0.6.4";
+const CACHE = "meshboard-v0.6.5";
 const CORE = [
   "./styles.css", "./manifest.webmanifest",
   "./app/main.js", "./app/models.js", "./app/demo.js", "./app/storage.js",
   "./app/meshtastic-adapter.js", "./app/utils.js", "./app/node-intelligence.js",
-  "./app/packet-lab.js", "./app/rf-telemetry.js"
+  "./app/packet-lab.js", "./app/rf-telemetry.js",
+  "./vendor/meshtastic-runtime.js", "./vendor/dist-xiYX3mxm.js"
 ];
 
 self.addEventListener("install", event => {

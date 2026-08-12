@@ -6,7 +6,7 @@ const RESYNC_TIMEOUT_MS = 45_000;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 3_000, 5_000, 8_000, 12_000, 15_000];
 const PORT_OPEN_RETRY_DELAYS_MS = [250, 500, 750];
 const POST_CLOSE_DELAY_MS = 200;
-// Stable published Meshtastic browser API status values from @meshtastic/core 2.6.7.
+// Stable Meshtastic device-status values used by the vendored browser runtime.
 const STATUS = {
     DeviceRestarting: 1,
     DeviceDisconnected: 2,
@@ -19,16 +19,23 @@ const STATUS = {
 let sdkPromise;
 async function loadSdk() {
     if (!sdkPromise) {
-        sdkPromise = Promise.all([
-            import("@meshtastic/core"),
-            import("@meshtastic/transport-web-serial")
-        ]).then(([core, serial]) => ({ core, serial })).catch(error => {
+        const runtimeUrl = new URL("./vendor/meshtastic-runtime.js", window.location.href).href;
+        sdkPromise = import(runtimeUrl).then(runtime => {
+            if (typeof runtime.MeshDevice !== "function" || typeof runtime.TransportWebSerial !== "function") {
+                throw new Error("The bundled Meshtastic runtime does not expose the required browser client and Web Serial transport.");
+            }
+            return {
+                core: { MeshDevice: runtime.MeshDevice, Protobuf: {}, Constants: {} },
+                serial: { TransportWebSerial: runtime.TransportWebSerial }
+            };
+        }).catch(error => {
             sdkPromise = undefined;
-            throw new Error(`Meshtastic browser libraries could not be loaded from the pinned browser ESM runtime: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(`Bundled Meshtastic browser runtime could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
         });
     }
     return sdkPromise;
 }
+
 function enumName(group, value) {
     if (value === undefined || value === null)
         return undefined;
@@ -239,7 +246,7 @@ export class MeshtasticAdapter {
                 this.hooks.diagnostics({ lastTransportEventAt: now() });
             });
             this.hooks.sdkState("USB serial port open; creating Meshtastic transport");
-            const transport = await serial.TransportWebSerial.createFromPort(port, BAUD_RATE);
+            const transport = new serial.TransportWebSerial(port);
             if (generation !== this.generation) {
                 await transport.disconnect().catch(() => { });
                 return;
