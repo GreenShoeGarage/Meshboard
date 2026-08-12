@@ -4,6 +4,8 @@ const CONNECT_ACK_TIMEOUT_MS = 15_000;
 const SYNC_TIMEOUT_MS = 45_000;
 const RESYNC_TIMEOUT_MS = 45_000;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 3_000, 5_000, 8_000, 12_000, 15_000];
+const PORT_OPEN_RETRY_DELAYS_MS = [250, 500, 750];
+const POST_CLOSE_DELAY_MS = 200;
 // Stable published Meshtastic browser API status values from @meshtastic/core 2.6.7.
 const STATUS = {
     DeviceRestarting: 1,
@@ -22,7 +24,7 @@ async function loadSdk() {
             import("@meshtastic/transport-web-serial")
         ]).then(([core, serial]) => ({ core, serial })).catch(error => {
             sdkPromise = undefined;
-            throw new Error(`Meshtastic browser libraries could not be loaded: ${error instanceof Error ? error.message : String(error)}`);
+            throw new Error(`Meshtastic browser libraries could not be loaded from the pinned browser ESM runtime: ${error instanceof Error ? error.message : String(error)}`);
         });
     }
     return sdkPromise;
@@ -71,6 +73,50 @@ function timeout(promise, ms, message) {
 function errorMessage(error) {
     const e = error;
     return e?.userMessage || e?.message || String(error);
+}
+function sleep(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
+function isPortBusyError(error) {
+    const e = error;
+    return e?.name === "InvalidStateError" || e?.name === "NetworkError" || /already open|failed to open serial port|access is denied|resource busy|device or resource busy/i.test(e?.message || "");
+}
+function serialFailure(kind, userMessage, cause) {
+    const failure = new Error(userMessage);
+    failure.name = "SerialConnectError";
+    failure.kind = kind;
+    failure.userMessage = userMessage;
+    if (cause !== undefined)
+        failure.cause = cause;
+    return failure;
+}
+async function prepareSerialPort(port, onAttempt) {
+    if (port.readable || port.writable) {
+        try {
+            await port.close();
+        }
+        catch (cause) {
+            throw serialFailure("in-use", "Serial port is open and could not be released. Close any other Meshtastic tab, flasher, Arduino Serial Monitor, terminal, esptool, or Meshtastic CLI using this radio, then try again.", cause);
+        }
+        await sleep(POST_CLOSE_DELAY_MS);
+    }
+    let lastError;
+    const total = PORT_OPEN_RETRY_DELAYS_MS.length + 1;
+    for (let attempt = 0; attempt < total; attempt += 1) {
+        onAttempt?.(attempt + 1, total);
+        try {
+            await port.open({ baudRate: BAUD_RATE });
+            return;
+        }
+        catch (error) {
+            lastError = error;
+            if (!isPortBusyError(error) || attempt >= PORT_OPEN_RETRY_DELAYS_MS.length)
+                break;
+            await sleep(PORT_OPEN_RETRY_DELAYS_MS[attempt]);
+        }
+    }
+    if (isPortBusyError(lastError)) {
+        throw serialFailure("in-use", "Serial port is busy or still settling. Close any other tab or app using the radio (Meshtastic Web/Flasher, Arduino Serial Monitor, terminal, esptool, Meshtastic CLI), then unplug/replug the radio and press CONNECT RADIO again.", lastError);
+    }
+    throw serialFailure("unavailable", `Could not open the serial port${lastError instanceof Error && lastError.message ? `: ${lastError.message}` : "."} Re-plug the radio and try again.`, lastError);
 }
 function isPortPickerCancel(error) {
     const e = error;
@@ -187,7 +233,12 @@ export class MeshtasticAdapter {
             const serialInfo = { ...this.portInfo, baudRate: BAUD_RATE };
             this.hooks.radio({ serialVendorId: this.portInfo.usbVendorId, serialProductId: this.portInfo.usbProductId });
             this.hooks.diagnostics({ serialInfo, lastTransportEventAt: now() });
-            this.hooks.sdkState("Opening USB serial transport");
+            this.hooks.sdkState("Preparing USB serial port");
+            await prepareSerialPort(port, (attempt, total) => {
+                this.hooks.sdkState(`Opening USB serial port — attempt ${attempt}/${total}`);
+                this.hooks.diagnostics({ lastTransportEventAt: now() });
+            });
+            this.hooks.sdkState("USB serial port open; creating Meshtastic transport");
             const transport = await serial.TransportWebSerial.createFromPort(port, BAUD_RATE);
             if (generation !== this.generation) {
                 await transport.disconnect().catch(() => { });
@@ -222,6 +273,12 @@ export class MeshtasticAdapter {
         catch (error) {
             const message = errorMessage(error);
             await this.shutdownClient();
+            if (!this.transport && this.port && (this.port.readable || this.port.writable)) {
+                try {
+                    await this.port.close();
+                }
+                catch { }
+            }
             if (!recoveryAttempt && !reuseGrantedPort && isPortPickerCancel(error)) {
                 this.hooks.connection("DISCONNECTED", "Serial port selection canceled by operator.");
                 this.hooks.sdkState("Ready — no serial port selected");
