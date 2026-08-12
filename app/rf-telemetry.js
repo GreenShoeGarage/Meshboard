@@ -1,4 +1,4 @@
-import { median } from "./utils.js";
+import { median } from "./utils";
 const METRIC_META = {
     batteryLevel: { label: "Battery", unit: "%", decimals: 0, group: "DEVICE" }, battery: { label: "Battery", unit: "%", decimals: 0, group: "DEVICE" },
     voltage: { label: "Voltage", unit: " V", decimals: 2, group: "DEVICE" }, channelUtilization: { label: "Channel utilization", unit: "%", decimals: 1, group: "RADIO" },

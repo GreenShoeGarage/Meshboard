@@ -1,8 +1,7 @@
-import { bytesToHex, nodeId, safeObject } from "./utils.js";
+import { bytesToHex, nodeId, safeObject } from "./utils";
 const BAUD_RATE = 115200;
-const CONNECT_ACK_TIMEOUT_MS = 15_000;
-const SYNC_TIMEOUT_MS = 45_000;
-const RESYNC_TIMEOUT_MS = 45_000;
+const SYNC_TIMEOUT_MS = 60_000;
+const RESYNC_TIMEOUT_MS = 60_000;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 3_000, 5_000, 8_000, 12_000, 15_000];
 const PORT_OPEN_RETRY_DELAYS_MS = [250, 500, 750];
 const POST_CLOSE_DELAY_MS = 200;
@@ -20,7 +19,8 @@ let sdkPromise;
 async function loadSdk() {
     if (!sdkPromise) {
         const runtimeUrl = new URL("./vendor/meshtastic-runtime.js", window.location.href).href;
-        sdkPromise = import(runtimeUrl).then(runtime => {
+        sdkPromise = import(/* @vite-ignore */ runtimeUrl).then(module => {
+            const runtime = module;
             if (typeof runtime.MeshDevice !== "function" || typeof runtime.TransportWebSerial !== "function") {
                 throw new Error("The bundled Meshtastic runtime does not expose the required browser client and Web Serial transport.");
             }
@@ -35,7 +35,6 @@ async function loadSdk() {
     }
     return sdkPromise;
 }
-
 function enumName(group, value) {
     if (value === undefined || value === null)
         return undefined;
@@ -84,7 +83,8 @@ function errorMessage(error) {
 function sleep(ms) { return new Promise(resolve => window.setTimeout(resolve, ms)); }
 function isPortBusyError(error) {
     const e = error;
-    return e?.name === "InvalidStateError" || e?.name === "NetworkError" || /already open|failed to open serial port|access is denied|resource busy|device or resource busy/i.test(e?.message || "");
+    return e?.name === "InvalidStateError" || e?.name === "NetworkError" ||
+        /already open|failed to open serial port|access is denied|resource busy|device or resource busy/i.test(e?.message || "");
 }
 function serialFailure(kind, userMessage, cause) {
     const failure = new Error(userMessage);
@@ -96,6 +96,8 @@ function serialFailure(kind, userMessage, cause) {
     return failure;
 }
 async function prepareSerialPort(port, onAttempt) {
+    // Port hygiene mirrors the current official Meshtastic Web Serial transport.
+    // A stale stream can remain briefly after reconnect/re-enumeration; release it first.
     if (port.readable || port.writable) {
         try {
             await port.close();
@@ -195,8 +197,8 @@ export class MeshtasticAdapter {
         this.configured = false;
         this.resetSync();
         this.hooks.connection("SYNCHRONIZING", "Operator requested configuration resynchronization");
-        this.hooks.sdkState("Resynchronizing device configuration");
-        await timeout(Promise.resolve(this.device.configure()), CONNECT_ACK_TIMEOUT_MS, "The radio did not acknowledge the resynchronization request.");
+        this.hooks.sdkState("Resynchronizing — waiting for matching configCompleteId");
+        this.startConfigureRequest(this.device, "resynchronization");
         await this.waitUntilConfigured(RESYNC_TIMEOUT_MS);
     }
     async disconnect(userInitiated = true) {
@@ -246,6 +248,7 @@ export class MeshtasticAdapter {
                 this.hooks.diagnostics({ lastTransportEventAt: now() });
             });
             this.hooks.sdkState("USB serial port open; creating Meshtastic transport");
+            // The descriptor is already open. Construct the vendored browser transport directly.
             const transport = new serial.TransportWebSerial(port);
             if (generation !== this.generation) {
                 await transport.disconnect().catch(() => { });
@@ -261,8 +264,8 @@ export class MeshtasticAdapter {
             this.disposeSubscriptions();
             this.bindClient(device);
             this.hooks.connection("SYNCHRONIZING");
-            this.hooks.sdkState("Requesting Meshtastic configuration");
-            await timeout(Promise.resolve(device.configure()), CONNECT_ACK_TIMEOUT_MS, "The radio did not acknowledge the initial configuration request.");
+            this.hooks.sdkState("Sending wantConfigId — waiting for matching configCompleteId");
+            this.startConfigureRequest(device, "initial synchronization");
             await this.waitUntilConfigured(SYNC_TIMEOUT_MS);
             if (generation !== this.generation)
                 return;
@@ -280,11 +283,12 @@ export class MeshtasticAdapter {
         catch (error) {
             const message = errorMessage(error);
             await this.shutdownClient();
+            // If opening succeeded but transport construction failed, no transport exists to own cleanup.
             if (!this.transport && this.port && (this.port.readable || this.port.writable)) {
                 try {
                     await this.port.close();
                 }
-                catch { }
+                catch { /* best-effort release */ }
             }
             if (!recoveryAttempt && !reuseGrantedPort && isPortPickerCancel(error)) {
                 this.hooks.connection("DISCONNECTED", "Serial port selection canceled by operator.");
@@ -319,6 +323,21 @@ export class MeshtasticAdapter {
                 this.hooks.error("protocol", error);
             }
         };
+        sub(events.onConfigComplete, (configId) => {
+            this.markValidProtocol();
+            const expected = Number(device?.configId);
+            const received = Number(configId);
+            if (Number.isFinite(expected) && received !== expected) {
+                this.hooks.timeline({ id: crypto.randomUUID(), time: now(), type: "configuration complete mismatch", severity: "INFO", source: "RADIO", text: `Ignored configCompleteId ${received}; waiting for ${expected}.`, provenance: "OBSERVED" });
+                return;
+            }
+            this.configured = true;
+            this.sync.phase = "configured";
+            this.publishProgress();
+            this.hooks.connection("CONNECTED");
+            this.hooks.sdkState("Matching configCompleteId received");
+            this.hooks.radio({ connectedAt: now() });
+        });
         sub(events.onDeviceStatus, (status) => {
             const label = Object.entries(STATUS).find(([, value]) => value === status)?.[0] ?? `DeviceStatus ${status}`;
             this.hooks.sdkState(label);
@@ -649,6 +668,21 @@ export class MeshtasticAdapter {
         }
         return ports.length === 1 ? ports[0] : undefined;
     }
+    startConfigureRequest(device, context) {
+        // Meshtastic firmware does not reliably ACK wantConfigId. The SDK itself
+        // treats that ACK as optional; synchronization is authoritative only when
+        // the matching configCompleteId / DeviceConfigured event arrives.
+        void Promise.resolve(device.configure()).then(() => {
+            if (!this.configured && this.device === device) {
+                this.hooks.sdkState(`${context}: wantConfigId send completed; waiting for configCompleteId`);
+            }
+        }).catch((error) => {
+            if (this.operatorDisconnect || this.device !== device)
+                return;
+            this.hooks.error("protocol", error);
+            this.hooks.sdkState(`${context}: wantConfigId ACK unavailable; continuing to wait for configCompleteId`);
+        });
+    }
     waitUntilConfigured(ms) {
         if (this.configured)
             return Promise.resolve();
@@ -665,7 +699,7 @@ export class MeshtasticAdapter {
                 }
                 else if (Date.now() - started >= ms) {
                     clearInterval(timer);
-                    reject(new Error(`Meshtastic synchronization did not complete within ${Math.round(ms / 1000)} seconds.`));
+                    reject(new Error(`Meshtastic synchronization did not receive the matching configCompleteId within ${Math.round(ms / 1000)} seconds. Received so far: ${this.sync.nodes} nodes, ${this.sync.channels} channels, ${this.sync.config} config packets, ${this.sync.modules} module packets, myInfo=${this.sync.myInfo ? "yes" : "no"}, metadata=${this.sync.metadata ? "yes" : "no"}.`));
                 }
             }, 100);
         });

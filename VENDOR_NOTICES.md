@@ -1,6 +1,6 @@
 # Vendored Meshtastic browser runtime
 
-MESHBOARD v0.6.5 vendors the browser-executable Meshtastic runtime required for USB/Web Serial operation. CONNECT RADIO therefore does not depend on a CDN, runtime ESM transformer, Node compatibility shim, or bare npm package specifier.
+MESHBOARD v0.6.6 vendors the browser-executable Meshtastic runtime required for USB/Web Serial operation. CONNECT RADIO therefore does not depend on a CDN, runtime ESM transformer, Node compatibility shim, or bare npm package specifier.
 
 ## Upstream provenance
 
